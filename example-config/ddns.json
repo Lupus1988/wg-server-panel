@@ -1,0 +1,6 @@
+{
+  "enabled": false,
+  "provider": "dynu",
+  "hostname": "",
+  "use_as_endpoint": true
+}

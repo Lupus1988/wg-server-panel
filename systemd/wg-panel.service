@@ -1,0 +1,12 @@
+[Unit]
+Description=WireGuard Server Panel
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/opt/wg-panel
+ExecStart=/opt/wg-panel/venv/bin/python /opt/wg-panel/app.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
