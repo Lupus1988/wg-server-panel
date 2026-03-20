@@ -1,6 +1,9 @@
 {
-  "endpoint": "",
+  "endpoint": "vpn.example.com",
   "port": 51820,
-  "dns": "10.200.200.1",
-  "allowed_ips": "10.200.200.0/24"
+  "dns": "10.200.1.1",
+  "allowed_ips": "10.200.1.0/24,192.168.0.0/24",
+  "server_vpn_ip": "10.200.0.1",
+  "client_network": "10.200.1.0/24",
+  "lan_network": "192.168.0.0/24"
 }

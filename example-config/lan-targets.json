@@ -1,0 +1,18 @@
+{
+  "targets": [
+    {
+      "id": "example-router",
+      "name": "Router",
+      "ip": "192.168.0.1",
+      "enabled": true,
+      "comment": ""
+    },
+    {
+      "id": "example-server",
+      "name": "Homeserver",
+      "ip": "192.168.0.10",
+      "enabled": true,
+      "comment": "Example target"
+    }
+  ]
+}

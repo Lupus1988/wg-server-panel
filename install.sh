@@ -22,7 +22,7 @@ apt update
 apt install -y wireguard python3 python3-venv python3-pip curl
 
 echo "[2/8] Verzeichnisse anlegen"
-mkdir -p "$APP_DIR" "$CLIENTS_DIR"
+mkdir -p "$APP_DIR" "$CLIENTS_DIR" "$APP_DIR/lan-targets"
 
 echo "[3/8] Dateien kopieren"
 cp panel/app.py "$APP_DIR/app.py"
@@ -33,6 +33,7 @@ echo "[4/8] Beispiel-Konfigurationen anlegen, falls nicht vorhanden"
 [[ -f "$APP_DIR/server.json" ]] || cp example-config/server.json "$APP_DIR/server.json"
 [[ -f "$APP_DIR/ddns.json" ]] || cp example-config/ddns.json "$APP_DIR/ddns.json"
 [[ -f "$CLIENTS_DIR/clients.json" ]] || cp example-config/clients.json "$CLIENTS_DIR/clients.json"
+[[ -f "$APP_DIR/lan-targets/lan-targets.json" ]] || cp example-config/lan-targets.json "$APP_DIR/lan-targets/lan-targets.json"
 
 echo "[5/8] Python venv einrichten"
 if [[ ! -d "$VENV_DIR" ]]; then
