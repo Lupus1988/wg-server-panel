@@ -19,7 +19,7 @@ fi
 
 echo "[1/8] Pakete installieren"
 apt update
-apt install -y wireguard python3 python3-venv python3-pip curl
+apt install -y wireguard iptables python3 python3-venv python3-pip curl
 
 echo "[2/8] Verzeichnisse anlegen"
 mkdir -p "$APP_DIR" "$CLIENTS_DIR" "$APP_DIR/lan-targets"
@@ -44,12 +44,16 @@ echo "[6/8] Python-Abhängigkeiten installieren"
 "$VENV_DIR/bin/pip" install --upgrade pip
 "$VENV_DIR/bin/pip" install flask qrcode pillow
 
-echo "[7/8] systemd-Service installieren"
+echo "[7/8] IPv4-Forwarding aktivieren"
+printf "net.ipv4.ip_forward=1\n" > /etc/sysctl.d/99-wg-panel.conf
+sysctl --system >/dev/null
+
+echo "[8/8] systemd-Service installieren"
 cp systemd/wg-panel.service "$SERVICE_FILE"
 systemctl daemon-reload
 systemctl enable wg-panel
 
-echo "[8/8] Service starten"
+echo "[9/9] Service starten"
 systemctl restart wg-panel
 
 echo

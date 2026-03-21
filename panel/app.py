@@ -1886,6 +1886,8 @@ def server_control(action):
 @app.route("/")
 def index():
     data = load_clients()
+    if not WG_CONF.exists():
+        return redirect("/server/generate")
     server = get_server_runtime()
     ddns = load_ddns_settings()
     stats = get_live_stats()
@@ -2525,7 +2527,8 @@ def server_generate():
             old_server = load_server_settings()
             _, pub, new_conf = generate_server_config()
             backup = f"/etc/wireguard/wg0.conf.before-generate-server.{run_cmd(['date', '+%F-%H%M%S'])}"
-            run_cmd(["cp", str(WG_CONF), backup])
+            if WG_CONF.exists():
+                run_cmd(["cp", str(WG_CONF), backup])
             with WG_CONF.open("w", encoding="utf-8") as f:
                 f.write(new_conf)
             save_clients({"clients": []})
