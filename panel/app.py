@@ -459,6 +459,14 @@ def save_ddns_settings(data):
     save_json(DDNS_FILE, data)
 
 
+def set_dynu_timer_enabled(enabled):
+    if enabled:
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+        subprocess.run(["systemctl", "enable", "--now", "wg-panel-dynu.timer"], check=False)
+    else:
+        subprocess.run(["systemctl", "disable", "--now", "wg-panel-dynu.timer"], check=False)
+
+
 def channel_sort_key(value):
     try:
         return int(value)
@@ -2047,6 +2055,8 @@ def ddns_settings():
                     password_new or existing_password
                 )
 
+            set_dynu_timer_enabled(bool(data["enabled"] and hostname))
+
             saved = True
             username, existing_password = read_dynu_netrc()
             env_hosts = read_dynu_env_hosts()
@@ -2831,6 +2841,15 @@ def client_view(key):
     <h2>{html.escape(c['name'])}</h2>
     <p><strong>IP:</strong> {html.escape(c['ip'])}/32</p>
     <p><strong>Freigabe:</strong> {html.escape(mode_text)}</p>
+
+    <form method="post" action="/client/rename" style="margin:16px 0 20px 0;">
+      <input type="hidden" name="public_key" value="{html.escape(c['public_key'])}">
+      <label>Clientname bearbeiten</label>
+      <input name="name" value="{html.escape(c['name'])}" required>
+      <br><br>
+      <button type="submit">Name speichern</button>
+    </form>
+
     <div class="cfg-qr-wrap">
       <div class="cfg-col">
         <textarea id="cfg" class="config-textarea config-textarea-client" readonly>{html.escape(cfg)}</textarea>
@@ -2864,6 +2883,32 @@ def client_download(key):
     )
 
 
+
+@app.route("/client/rename", methods=["POST"])
+def client_rename():
+    key = (request.form.get("public_key") or "").strip()
+    new_name = (request.form.get("name") or "").strip()
+
+    if not key or not new_name:
+        return redirect("/", code=303)
+
+    data = load_clients()
+    target = None
+
+    for c in data["clients"]:
+        if c["public_key"] == key:
+            target = c
+            break
+
+    if not target:
+        return redirect("/", code=303)
+
+    if any(c["name"] == new_name and c["public_key"] != key for c in data["clients"]):
+        return redirect(f"/client/{key}/view", code=303)
+
+    target["name"] = new_name
+    save_clients(data)
+    return redirect(f"/client/{key}/view", code=303)
 
 @app.route("/client/level", methods=["POST"])
 def update_client_level():

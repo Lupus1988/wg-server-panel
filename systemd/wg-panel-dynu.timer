@@ -1,0 +1,10 @@
+[Unit]
+Description=WG Panel Dynu DDNS Timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=wg-panel-dynu.service
+
+[Install]
+WantedBy=timers.target

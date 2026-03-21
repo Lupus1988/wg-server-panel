@@ -1,0 +1,6 @@
+[Unit]
+Description=WG Panel Dynu DDNS Update
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wg-panel-dynu-update.sh
