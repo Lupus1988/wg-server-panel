@@ -1,5 +1,5 @@
 {
-  "endpoint": "vpn.example.com",
+  "endpoint": "",
   "port": 51820,
   "dns": "10.200.1.1",
   "allowed_ips": "10.200.1.0/24,192.168.0.0/24",

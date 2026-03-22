@@ -2520,10 +2520,13 @@ def server_generate():
 
     if request.method == "POST":
         confirm_text = (request.form.get("confirm_text") or "").strip()
+        endpoint = (request.form.get("endpoint") or "").strip()
         lan_network = (request.form.get("lan_network") or "").strip()
 
         if confirm_text != "GENERATE":
             error = 'Zur Bestätigung muss exakt <code>GENERATE</code> eingegeben werden.'
+        elif not endpoint:
+            error = 'Bitte einen Endpunkt angeben, z. B. öffentliche IP oder DDNS-Hostname.'
         elif not lan_network:
             error = 'Bitte ein LAN-Netz im CIDR-Format angeben, z. B. <code>192.168.0.0/24</code>.'
         else:
@@ -2534,7 +2537,6 @@ def server_generate():
                 error = 'Ungültiges LAN-Netz. Bitte CIDR-Format verwenden, z. B. <code>192.168.0.0/24</code>.'
 
         if not error:
-            old_server = load_server_settings()
             _, pub, new_conf = generate_server_config()
             backup = f"/etc/wireguard/wg0.conf.before-generate-server.{run_cmd(['date', '+%F-%H%M%S'])}"
             if WG_CONF.exists():
@@ -2542,7 +2544,6 @@ def server_generate():
             with WG_CONF.open("w", encoding="utf-8") as f:
                 f.write(new_conf)
             save_clients({"clients": []})
-            endpoint = old_server["endpoint"] or detect_public_ip()
             save_server_settings({
                 "endpoint": endpoint,
                 "port": 51820,
@@ -2557,6 +2558,7 @@ def server_generate():
 <h1>Server neu generiert</h1>
 <div class="card">
 <p><strong>Neuer Server Public Key:</strong> <code>{html.escape(pub)}</code></p>
+<p><strong>Gespeicherter Endpoint:</strong> <code>{html.escape(endpoint)}</code></p>
 <p><strong>Erkanntes/gespeichertes LAN-Netz:</strong> <code>{html.escape(lan_network)}</code></p>
 <p><strong>Backup:</strong> <code>{html.escape(backup)}</code></p>
 <p><strong>Wichtig:</strong> UDP-Port <code>51820</code> muss im Router auf diesen Server weitergeleitet/freigegeben sein.</p>
@@ -2568,6 +2570,8 @@ def server_generate():
 """
             return render_template_string(BASE, body=body)
 
+    current_endpoint = (request.form.get('endpoint') or load_server_settings().get('endpoint', '') or '').strip()
+
     body = f"""
 <h1>Server neu generieren</h1>
 <div class="card">
@@ -2577,11 +2581,15 @@ def server_generate():
     <p>Danach funktionieren alle bestehenden Clients nicht mehr.</p>
   </div>
   <div style="width:420px; max-width:100%; border:2px solid #f0c419; color:#f0c419; border-radius:14px; padding:18px; box-sizing:border-box;">
-    <strong>Hinweis:</strong> UDP-Port <span style="font-size:1em; text-decoration:underline; font-weight:700;">51820</span> muss im Router auf diesen Server weitergeleitet/freigegeben sein.
+    <strong>Hinweis:</strong> UDP-Port <span style="font-size:1em; text-decoration:underline; font-weight:700;">51820</span> muss im Router auf diesen Server weitergeleitet/freigegeben sein.<br><br>
+    <strong>Endpunkt:</strong> Öffentliche IP oder DDNS-Hostname eintragen.
   </div>
 </div>
 {f'<p><strong>Fehler:</strong> {error}</p>' if error else ''}
 <form method="post">
+<label>Endpunkt (öffentliche IP oder DDNS-Hostname)</label>
+<input name="endpoint" value="{html.escape(current_endpoint)}" placeholder="z. B. vpn.example.com oder 203.0.113.10" required>
+<br><br>
 <label>Erkanntes LAN-Netz (bei Bedarf anpassen)</label>
 <input name="lan_network" value="{html.escape((request.form.get('lan_network') or detected_lan).strip())}" placeholder="192.168.0.0/24">
 <br><br>
