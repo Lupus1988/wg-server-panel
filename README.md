@@ -3,7 +3,7 @@ Lightweight WireGuard management panel for Raspberry Pi and Linux servers.
 No Docker.  
 Minimal dependencies.  
 Simple installation.
-Built with Python + Flask.
+Built with Python + Flask/Gunicorn.
 ---
 Features
 Single-server WireGuard management panel

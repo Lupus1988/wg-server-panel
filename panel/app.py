@@ -1,6 +1,7 @@
 from flask import Flask, request, redirect, url_for, render_template_string, abort, Response, session
 import subprocess
 import json
+import os
 from pathlib import Path
 import ipaddress
 import qrcode
@@ -706,6 +707,26 @@ def generate_keypair():
     return priv, pub
 
 
+def detect_default_uplink_interface():
+    try:
+        route_out = subprocess.run(
+            ["ip", "-4", "route", "get", "1.1.1.1"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except Exception:
+        return "eth0"
+
+    parts = route_out.split()
+    for i, part in enumerate(parts):
+        if part == "dev" and i + 1 < len(parts):
+            uplink = parts[i + 1].strip()
+            if uplink:
+                return uplink
+    return "eth0"
+
+
 def public_from_private(private_key):
     return run_cmd(["wg", "pubkey"], input_text=private_key.strip() + "\n")
 
@@ -915,14 +936,15 @@ def get_live_stats():
 
 def generate_server_config():
     priv, pub = generate_keypair()
+    uplink_if = detect_default_uplink_interface()
     config = f"""[Interface]
 Address = 10.200.0.1/24,10.200.1.1/24
 ListenPort = 51820
 PrivateKey = {priv}
 
 # NAT für VPN-Clients
-PostUp = iptables -t nat -A POSTROUTING -s 10.200.1.0/24 -o eth0 -j MASQUERADE
-PostDown = iptables -t nat -D POSTROUTING -s 10.200.1.0/24 -o eth0 -j MASQUERADE
+PostUp = iptables -t nat -A POSTROUTING -s 10.200.1.0/24 -o {uplink_if} -j MASQUERADE
+PostDown = iptables -t nat -D POSTROUTING -s 10.200.1.0/24 -o {uplink_if} -j MASQUERADE
 """
     return priv, pub, config
 
@@ -3091,4 +3113,4 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=SESSION_TIMEOUT_MIN
 init_auth_defaults()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))

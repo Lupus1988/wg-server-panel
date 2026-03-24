@@ -19,7 +19,7 @@ fi
 
 echo "[1/8] Pakete installieren"
 apt update
-apt install -y wireguard iptables python3 python3-venv python3-pip curl
+apt install -y wireguard iptables python3 python3-venv python3-pip python3-gunicorn curl
 
 echo "[2/8] Verzeichnisse anlegen"
 mkdir -p "$APP_DIR" "$CLIENTS_DIR" "$APP_DIR/lan-targets"
@@ -44,7 +44,7 @@ fi
 
 echo "[6/9] Python-Abhängigkeiten installieren"
 "$VENV_DIR/bin/pip" install --upgrade pip
-"$VENV_DIR/bin/pip" install flask qrcode pillow
+"$VENV_DIR/bin/pip" install flask qrcode pillow gunicorn
 
 echo "[7/9] IPv4-Forwarding aktivieren"
 printf "net.ipv4.ip_forward=1\n" > /etc/sysctl.d/99-wg-panel.conf
