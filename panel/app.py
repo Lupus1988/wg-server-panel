@@ -987,7 +987,7 @@ def handshake_text(epoch_str):
         return "nie"
     now = int(datetime.now().timestamp())
     delta = max(0, now - epoch)
-    dt = datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
+    dt = datetime.fromtimestamp(epoch).strftime("%d.%m.%Y %H:%M:%S")
     if delta < 60:
         age = f"vor {delta}s"
     elif delta < 3600:
@@ -2184,7 +2184,6 @@ def index():
 
 
 <h2>Clients</h2>
-<p class="muted">Neue bzw. neu ausgerollte Clients verwenden Full-Tunnel. Internetzugriff wird hier serverseitig per Checkbox freigegeben oder gesperrt.</p>
 
 
 <table>
