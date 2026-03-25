@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, url_for, render_template_string, abort, Response, session
+from flask import Flask, request, redirect, url_for, render_template_string, abort, Response, session, jsonify
 import subprocess
 import json
 import os
@@ -34,7 +34,7 @@ DYNU_ENV_FILE = Path("/etc/wg-panel-dynu.env")
 DYNU_NETRC_FILE = Path("/etc/wg-panel-dynu.netrc")
 DYNU_UPDATE_SCRIPT = "/usr/local/bin/wg-panel-dynu-update.sh"
 
-ONLINE_HANDSHAKE_SECONDS = 180
+ONLINE_HANDSHAKE_SECONDS = 20
 
 AUTH_FILE = Path("/opt/wg-panel/auth.json")
 SECRET_FILE = Path("/opt/wg-panel/secret.key")
@@ -287,6 +287,11 @@ def normalize_client_access_profile(client):
     if "enabled" not in client:
         client["enabled"] = True
 
+    internet_access = client.get("internet_access", client.get("allow_internet", client.get("route_all_traffic", False)))
+    if isinstance(internet_access, str):
+        internet_access = internet_access.strip().lower() in {"1", "true", "yes", "on"}
+    client["internet_access"] = bool(internet_access)
+
     return client
 
 def load_clients():
@@ -308,6 +313,7 @@ def apply_client_firewall():
     server = get_server_runtime()
     clients = load_clients()["clients"]
     lan_targets = get_active_lan_target_ips()
+    mesh_networks = channel_networks()
 
     subprocess.run(["iptables", "-F", "WG-CLIENTS"], stderr=subprocess.DEVNULL)
     subprocess.run(["iptables", "-N", "WG-CLIENTS"], stderr=subprocess.DEVNULL)
@@ -318,10 +324,13 @@ def apply_client_firewall():
     subprocess.run(["iptables", "-A", "WG-CLIENTS", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
 
     server_ip = str(server.get("server_vpn_ip", "")).split("/")[0].strip()
+    client_network = str(server.get("client_network", "")).strip()
+    lan_network = str(server.get("lan_network", "")).strip()
 
     for c in clients:
         ip = c.get("ip")
         level = int(c.get("access_level", 3))
+        internet_access = bool(c.get("internet_access", False))
 
         if not ip:
             continue
@@ -337,6 +346,16 @@ def apply_client_firewall():
         if level >= 3:
             for target in lan_targets:
                 subprocess.run(["iptables", "-A", "WG-CLIENTS", "-s", src, "-d", target, "-j", "ACCEPT"])
+
+        if internet_access:
+            for mesh_network in mesh_networks:
+                if mesh_network and mesh_network != client_network:
+                    subprocess.run(["iptables", "-A", "WG-CLIENTS", "-s", src, "-d", mesh_network, "-j", "DROP"])
+            if client_network and level < 2:
+                subprocess.run(["iptables", "-A", "WG-CLIENTS", "-s", src, "-d", client_network, "-j", "DROP"])
+            if lan_network:
+                subprocess.run(["iptables", "-A", "WG-CLIENTS", "-s", src, "-d", lan_network, "-j", "DROP"])
+            subprocess.run(["iptables", "-A", "WG-CLIENTS", "-s", src, "-j", "ACCEPT"])
 
         subprocess.run(["iptables", "-A", "WG-CLIENTS", "-s", src, "-j", "DROP"])
 
@@ -395,6 +414,84 @@ def get_server_status():
     return status
 
 
+def first_host_in_network(network_value):
+    try:
+        network = ipaddress.ip_network(network_value, strict=False)
+        return str(next(network.hosts()))
+    except Exception:
+        return ""
+
+
+def sync_wireguard_interface_settings(server_settings):
+    if not WG_CONF.exists():
+        return False
+
+    text = WG_CONF.read_text(encoding="utf-8")
+    head, separator, tail = text.partition("\n[Peer]\n")
+    lines = head.splitlines()
+
+    client_network = str(server_settings.get("client_network", "")).strip()
+    server_vpn_ip = str(server_settings.get("server_vpn_ip", "")).strip()
+    listen_port = int(server_settings.get("port", 51820))
+    uplink_if = detect_default_uplink_interface()
+
+    gateway_ip = first_host_in_network(client_network)
+    try:
+        client_prefixlen = ipaddress.ip_network(client_network, strict=False).prefixlen
+    except Exception:
+        client_prefixlen = 24
+
+    address_values = []
+    if server_vpn_ip:
+        address_values.append(f"{server_vpn_ip}/24")
+    if gateway_ip and gateway_ip != server_vpn_ip:
+        address_values.append(f"{gateway_ip}/{client_prefixlen}")
+    address_line = f"Address = {','.join(address_values)}" if address_values else "Address = 10.200.0.1/24,10.200.1.1/24"
+    postup_line = f"PostUp = iptables -t nat -A POSTROUTING -s {client_network} -o {uplink_if} -j MASQUERADE"
+    postdown_line = f"PostDown = iptables -t nat -D POSTROUTING -s {client_network} -o {uplink_if} -j MASQUERADE"
+
+    found_address = False
+    found_port = False
+    found_postup = False
+    found_postdown = False
+    new_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("Address"):
+            new_lines.append(address_line)
+            found_address = True
+        elif stripped.startswith("ListenPort"):
+            new_lines.append(f"ListenPort = {listen_port}")
+            found_port = True
+        elif stripped.startswith("PostUp = iptables -t nat -A POSTROUTING"):
+            new_lines.append(postup_line)
+            found_postup = True
+        elif stripped.startswith("PostDown = iptables -t nat -D POSTROUTING"):
+            new_lines.append(postdown_line)
+            found_postdown = True
+        else:
+            new_lines.append(line)
+
+    if not found_address:
+        new_lines.append(address_line)
+    if not found_port:
+        new_lines.append(f"ListenPort = {listen_port}")
+    if not found_postup:
+        new_lines.append(postup_line)
+    if not found_postdown:
+        new_lines.append(postdown_line)
+
+    new_text = "\n".join(new_lines).rstrip() + "\n"
+    if separator:
+        new_text += "\n[Peer]\n" + tail.lstrip("\n")
+
+    if new_text != text:
+        WG_CONF.write_text(new_text, encoding="utf-8")
+        return True
+    return False
+
+
 def detect_public_ip():
     urls = [
         "https://api.ipify.org",
@@ -420,10 +517,13 @@ def load_server_settings():
     server_vpn_ip = str(data.get("server_vpn_ip", data.get("server_ip", "10.200.0.1"))).strip() or "10.200.0.1"
     client_network = str(data.get("client_network", data.get("network", data.get("allowed_ips", "10.200.1.0/24")))).strip() or "10.200.1.0/24"
     lan_network = str(data.get("lan_network", "192.168.0.0/24")).strip() or "192.168.0.0/24"
+    dns_value = str(data.get("dns", "")).strip()
+    if not dns_value or dns_value == "10.200.1.1":
+        dns_value = "1.1.1.1"
     return {
         "endpoint": endpoint,
         "port": int(data.get("port", 51820)),
-        "dns": str(data.get("dns", "10.200.1.1")).strip() or "10.200.1.1",
+        "dns": dns_value,
         "allowed_ips": str(data.get("allowed_ips", "10.200.0.0/16")).strip() or "10.200.0.0/16",
         "server_vpn_ip": server_vpn_ip,
         "client_network": client_network,
@@ -837,6 +937,8 @@ def get_client_allowed_ips(client, server):
     ]:
         if value and value not in values:
             values.append(value)
+    if "0.0.0.0/0" not in values:
+        values.append("0.0.0.0/0")
     return ",".join(values)
 
 def build_client_config(client):
@@ -981,6 +1083,15 @@ def infer_mode_from_allowed(allowed_ips, server_ip):
     if has_client_net and not has_lan:
         return 2
     return 3
+
+
+def allowed_ip_values(allowed_ips):
+    return [value.strip() for value in (allowed_ips or "").split(",") if value.strip()]
+
+
+def infer_internet_access_from_allowed(allowed_ips):
+    values = set(allowed_ip_values(allowed_ips))
+    return any(value in {"0.0.0.0/0", "::/0", "0.0.0.0/1", "128.0.0.0/1"} for value in values)
 
 def rebuild_server_peer_blocks():
     if not WG_CONF.exists():
@@ -1501,10 +1612,63 @@ function toggleTheme(){
   localStorage.setItem('theme', isLight ? 'light' : 'dark');
 }
 
+async function refreshDashboardStats(){
+  const clientRows = Array.from(document.querySelectorAll('tr[data-client-key]'));
+  const serverBadge = document.getElementById('server-status-badge');
+  if(!clientRows.length && !serverBadge){
+    return;
+  }
+
+  try{
+    const response = await fetch('/api/dashboard-status', {cache: 'no-store'});
+    if(!response.ok){
+      return;
+    }
+    const data = await response.json();
+
+    if(serverBadge && data.server){
+      serverBadge.textContent = data.server.status_text || 'Offline';
+      serverBadge.className = 'badge ' + (data.server.status_class || 'offline');
+    }
+
+    clientRows.forEach(function(row){
+      const key = row.dataset.clientKey || '';
+      const stat = (data.clients && data.clients[key]) || null;
+      if(!stat){
+        return;
+      }
+
+      const statusEl = row.querySelector('.client-status');
+      const handshakeEl = row.querySelector('.client-handshake');
+      const rxEl = row.querySelector('.client-rx');
+      const txEl = row.querySelector('.client-tx');
+
+      if(statusEl){
+        statusEl.textContent = stat.status_text || 'Offline';
+        statusEl.className = 'badge client-status ' + ((stat.online) ? 'online' : 'offline');
+      }
+      if(handshakeEl){
+        handshakeEl.textContent = stat.handshake || 'nie';
+      }
+      if(rxEl){
+        rxEl.textContent = stat.rx || '0 B';
+      }
+      if(txEl){
+        txEl.textContent = stat.tx || '0 B';
+      }
+    });
+  }catch(e){
+  }
+}
+
 document.addEventListener('DOMContentLoaded', function(){
   const saved = localStorage.getItem('theme');
   if(saved === 'light'){
     document.body.classList.add('light');
+  }
+  refreshDashboardStats();
+  if(document.querySelector('tr[data-client-key]') || document.getElementById('server-status-badge')){
+    window.setInterval(refreshDashboardStats, 2000);
   }
 });
 
@@ -1945,12 +2109,13 @@ def index():
         status_text = "Online" if st["online"] else "Offline"
         row_style = ' style="opacity:0.45;"' if not c.get("enabled", True) else ""
         checked = "checked" if c.get("enabled", True) else ""
+        internet_checked = "checked" if c.get("internet_access", False) else ""
         rows += f"""
-<tr class="disabled-client"{row_style}>
+<tr class="disabled-client" data-client-key="{html.escape(key)}"{row_style}>
 <td><form method="post" action="/client/toggle"><input type="hidden" name="public_key" value="{key}"><input type="checkbox" onchange="this.form.submit()" {checked}></form></td>
 <td>{html.escape(c["name"])}</td>
 <td>{html.escape(c["ip"])}/32</td>
-<td><span class="badge {status_class}">{status_text}</span></td>
+<td><span class="badge client-status {status_class}">{status_text}</span></td>
 <td>
 <form method="post" action="/client/level" class="inline-level-form">
 <input type="hidden" name="public_key" value="{key}">
@@ -1961,9 +2126,10 @@ def index():
 </select>
 </form>
 </td>
-<td>{html.escape(st["handshake"])}</td>
-<td>{html.escape(st["rx"])}</td>
-<td>{html.escape(st["tx"])}</td>
+<td><form method="post" action="/client/internet"><input type="hidden" name="public_key" value="{key}"><input type="checkbox" onchange="this.form.submit()" {internet_checked}></form></td>
+<td class="client-handshake">{html.escape(st["handshake"])}</td>
+<td class="client-rx">{html.escape(st["rx"])}</td>
+<td class="client-tx">{html.escape(st["tx"])}</td>
 <td class="actions"><a class="btn secondary" href="/client/{key}/view">Konfig</a>
 <a class="btn secondary" href="/client/{key}/download">Download</a>
 <form style="display:inline" method="post" action="/client/delete" onsubmit="return confirm('Client wirklich löschen?');"><input type="hidden" name="public_key" value="{key}"><button class="delete" type="submit">Löschen</button></form></td>
@@ -1999,18 +2165,12 @@ def index():
 <th>Endpoint</th>
 <th>Server-VPN</th>
 <th>Client-Netz</th>
-<th>Handshake</th>
-<th>RX</th>
-<th>TX</th>
 </tr>
 <tr>
-<td><span class="badge {server_status['status_class']}">{server_status['status_text']}</span></td>
+<td><span id="server-status-badge" class="badge {server_status['status_class']}">{server_status['status_text']}</span></td>
 <td>{server_status['endpoint']}</td>
 <td>{html.escape(server['server_vpn_ip'])}</td>
 <td>{html.escape(server['client_network'])}</td>
-<td>{server_status['handshake']}</td>
-<td>{server_status['rx']}</td>
-<td>{server_status['tx']}</td>
 </tr>
 </table>
 <br>
@@ -2024,6 +2184,7 @@ def index():
 
 
 <h2>Clients</h2>
+<p class="muted">Neue bzw. neu ausgerollte Clients verwenden Full-Tunnel. Internetzugriff wird hier serverseitig per Checkbox freigegeben oder gesperrt.</p>
 
 
 <table>
@@ -2033,16 +2194,42 @@ def index():
 <th>IP</th>
 <th>Status</th>
 <th><span class="level-help">Freigabe-Level <button type="button" class="level-help-btn" aria-label="Info zu Freigabe-Level">?</button><span class="level-help-pop"><div><strong>Level 1:</strong> nur Server</div><div><strong>Level 2:</strong> Server + lokale VPN-Clients</div><div><strong>Level 3:</strong> Level 2 + ausgewählte LAN-Ziele</div></span></span></th>
+<th>Internet</th>
 <th>Letzter Handshake</th>
 <th>RX</th>
 <th>TX</th>
 <th>Aktionen</th>
 </tr>
-{rows if rows else '<tr><td colspan="9">Keine Clients vorhanden.</td></tr>'}
+{rows if rows else '<tr><td colspan="10">Keine Clients vorhanden.</td></tr>'}
 </table>
 </div>
 """
     return render_template_string(BASE, body=body)
+
+
+@app.route("/api/dashboard-status")
+def dashboard_status_api():
+    stats = get_live_stats()
+    server_status = get_server_status()
+    clients = {}
+    for client in load_clients().get("clients", []):
+        public_key = client.get("public_key", "")
+        if not public_key:
+            continue
+        clients[public_key] = stats.get(public_key, {
+            "handshake": "nie",
+            "rx": "0 B",
+            "tx": "0 B",
+            "online": False,
+            "status_text": "Offline",
+        })
+    return jsonify({
+        "server": {
+            "status_text": server_status.get("status_text", "Offline"),
+            "status_class": server_status.get("status_class", "offline"),
+        },
+        "clients": clients,
+    })
 
 @app.route("/ddns", methods=["GET", "POST"])
 def ddns_settings():
@@ -2443,6 +2630,9 @@ def server_settings():
             "client_network": (request.form.get("client_network") or "10.200.1.0/24").strip(),
         }
         save_server_settings(data)
+        sync_wireguard_interface_settings(data)
+        restart_wg()
+        apply_client_firewall()
         saved_data = load_server_settings()
         display_endpoint = (
             ddns["hostname"]
@@ -2468,6 +2658,7 @@ def server_settings():
 <input name="port" type="number" value="{saved_data['port']}">
 <label>DNS</label>
 <input name="dns" value="{html.escape(saved_data['dns'])}">
+<p class="muted">Empfohlen z. B. <code>1.1.1.1</code> oder <code>9.9.9.9</code>. Dieser Wert wird direkt in neue Client-Konfigurationen geschrieben.</p>
 <label>Server-VPN-IP</label>
 <input name="server_vpn_ip" value="{html.escape(saved_data['server_vpn_ip'])}">
 <label>Client-Netz</label>
@@ -2569,7 +2760,7 @@ def server_generate():
             save_server_settings({
                 "endpoint": endpoint,
                 "port": 51820,
-                "dns": "10.200.1.1",
+                "dns": "1.1.1.1",
                 "allowed_ips": f"10.200.1.0/24,{lan_network}",
                 "server_vpn_ip": "10.200.0.1",
                 "client_network": "10.200.1.0/24",
@@ -2756,6 +2947,7 @@ def client_new():
                     "public_key": pub,
                     "private_key": priv,
                     "access_level": level,
+                    "internet_access": False,
                 })
                 save_clients(data)
                 add_peer(pub, ip, name)
@@ -2780,6 +2972,7 @@ def client_new():
 <tr><td>Level 2</td><td>Server + lokale VPN-Clients</td></tr>
 <tr><td>Level 3</td><td>Level 2 + ausgewählte LAN-Ziele</td></tr>
 </table>
+<p class="muted" style="margin-top:16px;">Neue Clients erhalten immer eine Full-Tunnel-Konfiguration. Internetzugriff wird danach nur noch serverseitig im Dashboard freigegeben oder gesperrt.</p>
 <br><br>
 <button type="submit">Client erstellen</button>
 <a class="btn secondary" href="/">Abbrechen</a>
@@ -2828,6 +3021,7 @@ def client_import():
                     "public_key": pub,
                     "private_key": priv,
                     "access_level": level,
+                    "internet_access": False,
                 })
                 save_clients(data)
                 add_peer(pub, ip, name)
@@ -2863,6 +3057,7 @@ def client_view(key):
     cfg = build_client_config(c)
     qr_b64 = generate_qr_base64(cfg)
     mode_text = client_level_label(c.get("access_level", 3))
+    internet_text = "Aktiv" if c.get("internet_access") else "Deaktiviert"
 
     body = f"""
 <h1>Client-Konfiguration</h1>
@@ -2871,6 +3066,8 @@ def client_view(key):
     <h2>{html.escape(c['name'])}</h2>
     <p><strong>IP:</strong> {html.escape(c['ip'])}/32</p>
     <p><strong>Freigabe:</strong> {html.escape(mode_text)}</p>
+    <p><strong>Internet über Tunnel:</strong> {internet_text}</p>
+    <p class="muted">Mit dieser Full-Tunnel-Konfiguration steuerst du Internetzugriff, Aktiv-Status und Level danach nur noch serverseitig im Panel.</p>
 
     <form method="post" action="/client/rename" style="margin:16px 0 20px 0;">
       <input type="hidden" name="public_key" value="{html.escape(c['public_key'])}">
@@ -2954,6 +3151,29 @@ def update_client_level():
     for c in data["clients"]:
         if c["public_key"] == key:
             c["access_level"] = int(level_raw)
+            normalize_client_access_profile(c)
+            changed = True
+            break
+
+    if changed:
+        save_clients(data)
+
+    return redirect("/", code=303)
+
+
+@app.route("/client/internet", methods=["POST"])
+def update_client_internet():
+    key = (request.form.get("public_key") or "").strip()
+
+    if not key:
+        return redirect("/", code=303)
+
+    data = load_clients()
+    changed = False
+
+    for c in data["clients"]:
+        if c["public_key"] == key:
+            c["internet_access"] = not bool(c.get("internet_access", False))
             normalize_client_access_profile(c)
             changed = True
             break

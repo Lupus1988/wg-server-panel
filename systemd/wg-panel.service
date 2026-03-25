@@ -5,9 +5,11 @@ After=network.target
 [Service]
 User=root
 WorkingDirectory=/opt/wg-panel
+RuntimeDirectory=wg-panel
 ExecStart=/opt/wg-panel/venv/bin/python -m gunicorn.app.wsgiapp --workers 2 --threads 4 --bind 0.0.0.0:5000 --access-logfile - --error-logfile - app:app
 Restart=always
 Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/run/wg-panel
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
