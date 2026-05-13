@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, url_for, render_template_string, abort, Response, session, jsonify
+from flask import Flask, request, redirect, url_for, render_template_string, abort, Response, session, jsonify, send_file
 import subprocess
 import json
 import os
@@ -17,10 +17,62 @@ import secrets
 import time
 from functools import wraps
 from werkzeug.security import generate_password_hash, check_password_hash
+from ddns_providers import PROVIDER_SPECS
 
 app = Flask(__name__)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+REMEMBER_ME_DAYS = 3650
+PANEL_DIR = Path(__file__).resolve().parent
+
+LANGUAGE_COOKIE = "wg_panel_locale"
+DEFAULT_LOCALE = "de-DE"
+SUPPORTED_LOCALES = [
+    "de-DE",
+    "en-GB",
+    "fr-FR",
+    "es-ES",
+    "it-IT",
+    "nl-NL",
+    "pl-PL",
+    "pt-PT",
+]
+LOCALE_SHORT_LABELS = {
+    "de-DE": "DE",
+    "en-GB": "EN",
+    "fr-FR": "FR",
+    "es-ES": "ES",
+    "it-IT": "IT",
+    "nl-NL": "NL",
+    "pl-PL": "PL",
+    "pt-PT": "PT",
+}
+LOCALE_FLAG_SVGS = {
+    "de-DE": '<svg viewBox="0 0 18 12" class="flag-badge" aria-hidden="true"><rect width="18" height="4" y="0" fill="#111111"/><rect width="18" height="4" y="4" fill="#c62828"/><rect width="18" height="4" y="8" fill="#f2c94c"/></svg>',
+    "en-GB": '<img class="flag-badge flag-image" src="https://flagemoji.net/img/flags/united-kingdom-flag.png" alt="">',
+    "fr-FR": '<svg viewBox="0 0 18 12" class="flag-badge" aria-hidden="true"><rect width="6" height="12" x="0" fill="#1f5fbf"/><rect width="6" height="12" x="6" fill="#f7f7f7"/><rect width="6" height="12" x="12" fill="#d63b3b"/></svg>',
+    "es-ES": '<svg viewBox="0 0 18 12" class="flag-badge" aria-hidden="true"><rect width="18" height="12" fill="#aa151b"/><rect width="18" height="6" y="3" fill="#f1bf00"/><rect width="2.2" height="3" x="4.2" y="4.5" rx=".3" fill="#aa151b"/><rect width="1.1" height="2.1" x="4.75" y="4.95" fill="#f1bf00"/></svg>',
+    "it-IT": '<svg viewBox="0 0 18 12" class="flag-badge" aria-hidden="true"><rect width="6" height="12" x="0" fill="#1f8f4e"/><rect width="6" height="12" x="6" fill="#f7f7f7"/><rect width="6" height="12" x="12" fill="#d63b3b"/></svg>',
+    "nl-NL": '<svg viewBox="0 0 18 12" class="flag-badge" aria-hidden="true"><rect width="18" height="4" y="0" fill="#ae1c28"/><rect width="18" height="4" y="4" fill="#f7f7f7"/><rect width="18" height="4" y="8" fill="#21468b"/></svg>',
+    "pl-PL": '<svg viewBox="0 0 18 12" class="flag-badge" aria-hidden="true"><rect width="18" height="6" y="0" fill="#f7f7f7"/><rect width="18" height="6" y="6" fill="#dc143c"/></svg>',
+    "pt-PT": '<svg viewBox="0 0 18 12" class="flag-badge" aria-hidden="true"><rect width="18" height="12" fill="#da291c"/><rect width="7.2" height="12" x="0" fill="#046a38"/><circle cx="7.2" cy="6" r="2" fill="none" stroke="#f2c94c" stroke-width="1"/><circle cx="7.2" cy="6" r=".8" fill="#f7f7f7"/></svg>',
+}
+TRANSLATIONS = {
+    "dashboard": {"de-DE": "Dashboard", "en-GB": "Dashboard", "fr-FR": "Tableau de bord", "es-ES": "Panel", "it-IT": "Dashboard", "nl-NL": "Dashboard", "pl-PL": "Panel", "pt-PT": "Painel"},
+    "lan_targets": {"de-DE": "LAN-Ziele", "en-GB": "LAN Targets", "fr-FR": "Cibles LAN", "es-ES": "Destinos LAN", "it-IT": "Target LAN", "nl-NL": "LAN-doelen", "pl-PL": "Cele LAN", "pt-PT": "Destinos LAN"},
+    "server": {"de-DE": "Server", "en-GB": "Server", "fr-FR": "Serveur", "es-ES": "Servidor", "it-IT": "Server", "nl-NL": "Server", "pl-PL": "Serwer", "pt-PT": "Servidor"},
+    "ddns": {"de-DE": "DDNS", "en-GB": "DDNS", "fr-FR": "DDNS", "es-ES": "DDNS", "it-IT": "DDNS", "nl-NL": "DDNS", "pl-PL": "DDNS", "pt-PT": "DDNS"},
+    "logout": {"de-DE": "Logout", "en-GB": "Log out", "fr-FR": "Déconnexion", "es-ES": "Cerrar sesión", "it-IT": "Esci", "nl-NL": "Uitloggen", "pl-PL": "Wyloguj", "pt-PT": "Terminar sessão"},
+    "language": {"de-DE": "Sprache", "en-GB": "Language", "fr-FR": "Langue", "es-ES": "Idioma", "it-IT": "Lingua", "nl-NL": "Taal", "pl-PL": "Język", "pt-PT": "Idioma"},
+    "panel_locked": {"de-DE": "Panel gesperrt", "en-GB": "Panel locked", "fr-FR": "Panneau verrouillé", "es-ES": "Panel bloqueado", "it-IT": "Pannello bloccato", "nl-NL": "Paneel vergrendeld", "pl-PL": "Panel zablokowany", "pt-PT": "Painel bloqueado"},
+    "username": {"de-DE": "Benutzername", "en-GB": "Username", "fr-FR": "Nom d'utilisateur", "es-ES": "Nombre de usuario", "it-IT": "Nome utente", "nl-NL": "Gebruikersnaam", "pl-PL": "Nazwa użytkownika", "pt-PT": "Nome de utilizador"},
+    "password": {"de-DE": "Passwort", "en-GB": "Password", "fr-FR": "Mot de passe", "es-ES": "Contraseña", "it-IT": "Password", "nl-NL": "Wachtwoord", "pl-PL": "Hasło", "pt-PT": "Palavra-passe"},
+    "sign_in": {"de-DE": "Anmelden", "en-GB": "Sign in", "fr-FR": "Connexion", "es-ES": "Iniciar sesión", "it-IT": "Accedi", "nl-NL": "Inloggen", "pl-PL": "Zaloguj", "pt-PT": "Iniciar sessão"},
+    "reset_access": {"de-DE": "Zugang zurücksetzen", "en-GB": "Reset access", "fr-FR": "Réinitialiser l'accès", "es-ES": "Restablecer acceso", "it-IT": "Reimposta accesso", "nl-NL": "Toegang resetten", "pl-PL": "Zresetuj dostęp", "pt-PT": "Repor acesso"},
+    "remember_me": {"de-DE": "Angemeldet bleiben", "en-GB": "Remember me", "fr-FR": "Rester connecté", "es-ES": "Mantener sesión iniciada", "it-IT": "Resta connesso", "nl-NL": "Aangemeld blijven", "pl-PL": "Pozostań zalogowany", "pt-PT": "Manter sessão iniciada"},
+    "session_timeout_hint": {"de-DE": "Die Sitzung läuft nach 20 Minuten Inaktivität automatisch ab.", "en-GB": "The session expires automatically after 20 minutes of inactivity.", "fr-FR": "La session expire automatiquement après 20 minutes d'inactivité.", "es-ES": "La sesión caduca automáticamente tras 20 minutos de inactividad.", "it-IT": "La sessione scade automaticamente dopo 20 minuti di inattività.", "nl-NL": "De sessie verloopt automatisch na 20 minuten inactiviteit.", "pl-PL": "Sesja wygasa automatycznie po 20 minutach bezczynności.", "pt-PT": "A sessão expira automaticamente após 20 minutos de inatividade."},
+    "operations_console": {"de-DE": "Operations Console", "en-GB": "Operations Console", "fr-FR": "Console d'exploitation", "es-ES": "Consola de operaciones", "it-IT": "Console operativa", "nl-NL": "Operations Console", "pl-PL": "Konsola operacyjna", "pt-PT": "Consola de operações"},
+}
 
 
 CLIENTS_FILE = Path("/opt/wg-panel/clients/clients.json")
@@ -33,6 +85,8 @@ WG_CONF = Path("/etc/wireguard/wg0.conf")
 DYNU_ENV_FILE = Path("/etc/wg-panel-dynu.env")
 DYNU_NETRC_FILE = Path("/etc/wg-panel-dynu.netrc")
 DYNU_UPDATE_SCRIPT = "/usr/local/bin/wg-panel-dynu-update.sh"
+DDNS_SECRET_FILE = Path("/etc/wg-panel-ddns-secrets.json")
+WG_DDNS_STATE_FILE = Path("/var/lib/wg-panel-ddns/state.json")
 
 ONLINE_HANDSHAKE_SECONDS = 20
 
@@ -126,9 +180,193 @@ def init_auth_defaults():
 
 
 
+def normalize_locale(value):
+    value = (value or "").strip()
+    return value if value in SUPPORTED_LOCALES else DEFAULT_LOCALE
+
+
+def current_locale():
+    session_value = normalize_locale(session.get("locale"))
+    cookie_value = normalize_locale(request.cookies.get(LANGUAGE_COOKIE))
+    if session_value != DEFAULT_LOCALE or "locale" in session:
+        return session_value
+    return cookie_value
+
+
+def t(key, **kwargs):
+    values = TRANSLATIONS.get(key, {})
+    text = values.get(current_locale()) or values.get(DEFAULT_LOCALE) or key
+    return text.format(**kwargs) if kwargs else text
+
+
+def locale_flag_html(code):
+    return LOCALE_FLAG_SVGS[code]
+
+
+def locale_compact_html(code):
+    return f'{locale_flag_html(code)}<span>{html.escape(LOCALE_SHORT_LABELS[code])}</span>'
+
+
+def language_selector(next_path="", compact=False):
+    next_value = html.escape(next_path or request.path)
+    if compact:
+        current = current_locale()
+        buttons = "".join(
+            f'<button type="submit" name="locale" value="{code}" class="language-menu-item{" active" if code == current else ""}">{locale_compact_html(code)}</button>'
+            for code in SUPPORTED_LOCALES
+        )
+        return (
+            '<details class="language-menu">'
+            f'<summary class="language-menu-toggle" aria-label="{html.escape(t("language"))}">{locale_compact_html(current)}</summary>'
+            '<form method="post" action="/set-language" class="language-menu-list">'
+            f'<input type="hidden" name="next" value="{next_value}">'
+            f"{buttons}"
+            "</form></details>"
+        )
+    return (
+        '<form method="post" action="/set-language" class="language-form">'
+        f'<input type="hidden" name="next" value="{next_value}">'
+        f'<label class="sr-only">{html.escape(t("language"))}</label>'
+        f'<select name="locale" onchange="this.form.submit()" aria-label="{html.escape(t("language"))}">'
+        + "".join(
+            f'<option value="{code}"{" selected" if code == current_locale() else ""}>{html.escape(LOCALE_SHORT_LABELS[code])}</option>'
+            for code in SUPPORTED_LOCALES
+        )
+        + "</select></form>"
+    )
+
+
+def panel_nav_html():
+    path = request.path or "/"
+    auth_paths = {"/login", "/setup", "/reset-access", "/factory-reset"}
+    if path in auth_paths or not is_session_valid():
+        return language_selector(path, compact=True) + f'<span class="nav-chip">{html.escape(t("panel_locked"))}</span>'
+    links = [
+        ("/", t("dashboard"), path == "/"),
+        ("/lan-targets", t("lan_targets"), path.startswith("/lan-targets")),
+        ("/server/settings", t("server"), path.startswith("/server/settings")),
+        ("/ddns", t("ddns"), path.startswith("/ddns")),
+    ]
+    items = []
+    for href, label, is_active in links:
+        css = "btn secondary active" if is_active else "btn secondary"
+        items.append(f'<a href="{href}" class="{css}">{html.escape(label)}</a>')
+    items.append(f'<a href="/logout" class="btn secondary">{html.escape(t("logout"))}</a>')
+    items.append(language_selector(path, compact=True))
+    return "".join(items)
+
+
+def login_background_preview():
+    return """
+<div class="page-head login-preview-head">
+<div>
+<h1>{dashboard}</h1>
+<p class="muted">WireGuard · DDNS · LAN</p>
+</div>
+</div>
+<div class="card">
+<div class="kv-grid">
+<div class="kv"><span class="kv-label">WireGuard</span><span><span class="badge online">OK</span></span></div>
+<div class="kv"><span class="kv-label">DDNS</span><span><span class="badge online">Aktiv</span></span></div>
+<div class="kv"><span class="kv-label">LAN</span><span>4 Ziele</span></div>
+<div class="kv"><span class="kv-label">Endpoint</span><span class="host-badge">vpn.example.net:51820</span></div>
+</div>
+</div>
+<div class="card">
+<h2>Clients</h2>
+<table>
+<tr><th>Name</th><th>Status</th><th>Letzter Handshake</th><th>Transfer</th></tr>
+<tr><td>iPhone</td><td><span class="badge online">Online</span></td><td>vor 12s</td><td>42 MB / 1.1 GB</td></tr>
+<tr><td>Laptop</td><td><span class="badge offline">Offline</span></td><td>vor 2h</td><td>0 B / 0 B</td></tr>
+</table>
+</div>
+""".format(dashboard=html.escape(t("dashboard")))
+
+
+def layout(body, page_class="", overlay="", nav_html=None):
+    return render_template_string(
+        BASE,
+        body=body,
+        page_class=page_class,
+        overlay=overlay,
+        nav_html=nav_html,
+    )
+
+
+@app.context_processor
+def inject_template_helpers():
+    return {
+        "current_locale": current_locale,
+        "panel_nav_html": panel_nav_html,
+        "t": t,
+        "site_logo_asset_url": site_logo_asset_url,
+        "login_logo_asset_url": login_logo_asset_url,
+        "favicon_asset_url": favicon_asset_url,
+        "background_asset_url": background_asset_url,
+        "signature_asset_url": signature_asset_url,
+    }
+
+
+def branding_asset_path(asset_type):
+    filename_map = {
+        "background": "Background.png",
+        "site_logo": "Website Header.png",
+        "login_logo": "Loginlogo.png",
+        "favicon": "Websitelogo.png",
+        "signature": "Signatur 2.png",
+    }
+    filename = filename_map.get(asset_type)
+    if not filename:
+        return None
+    candidates = [
+        PANEL_DIR / "assets" / filename,
+        Path("/opt/wg-panel/assets") / filename,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def branding_asset_url(asset_type, endpoint):
+    asset_path = branding_asset_path(asset_type)
+    if not asset_path:
+        return ""
+    try:
+        version = int(asset_path.stat().st_mtime)
+    except Exception:
+        version = 0
+    return url_for(endpoint, v=version)
+
+
+def site_logo_asset_url():
+    return branding_asset_url("site_logo", "site_logo_asset")
+
+
+def background_asset_url():
+    return branding_asset_url("background", "background_asset")
+
+
+def login_logo_asset_url():
+    return branding_asset_url("login_logo", "login_logo_asset")
+
+
+def favicon_asset_url():
+    return branding_asset_url("favicon", "favicon")
+
+
+def signature_asset_url():
+    return branding_asset_url("signature", "signature_asset")
+
+
 def is_session_valid():
     if not session.get("logged_in"):
         return False
+
+    if session.get("remember_me"):
+        session.permanent = True
+        session["last_seen"] = int(time.time())
+        return True
 
     last_seen = session.get("last_seen", 0)
     now = int(time.time())
@@ -157,10 +395,14 @@ def login_required(view_func):
 
 @app.before_request
 def enforce_auth():
-    open_paths = {"/login", "/setup", "/reset-access", "/factory-reset"}
+    open_paths = {"/login", "/setup", "/reset-access", "/factory-reset", "/set-language"}
     path = request.path or "/"
 
     if path.startswith("/static"):
+        return
+    if path.startswith("/branding/"):
+        return
+    if path == "/favicon.ico":
         return
 
     if not is_auth_configured():
@@ -182,7 +424,7 @@ def apply_security_headers(response):
     response.headers["Referrer-Policy"] = "same-origin"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self' 'unsafe-inline' data: blob:; "
-        "img-src 'self' data: blob:; "
+        "img-src 'self' data: blob: https://flagemoji.net; "
         "style-src 'self' 'unsafe-inline'; "
         "script-src 'self' 'unsafe-inline'; "
         "form-action 'self'; "
@@ -190,6 +432,58 @@ def apply_security_headers(response):
         "frame-ancestors 'none'"
     )
     return response
+
+
+@app.route("/set-language", methods=["POST"])
+def set_language():
+    locale = normalize_locale(request.form.get("locale"))
+    next_path = (request.form.get("next") or "").strip() or "/"
+    session["locale"] = locale
+    response = redirect(next_path if next_path.startswith("/") else "/", code=303)
+    response.set_cookie(LANGUAGE_COOKIE, locale, max_age=60 * 60 * 24 * 3650, samesite="Lax", httponly=False)
+    return response
+
+
+@app.route("/branding/signature")
+def signature_asset():
+    asset_path = branding_asset_path("signature")
+    if not asset_path:
+        abort(404)
+    return send_file(asset_path, mimetype="image/png", conditional=True, max_age=3600)
+
+
+@app.route("/branding/site-logo")
+def site_logo_asset():
+    asset_path = branding_asset_path("site_logo")
+    if not asset_path:
+        abort(404)
+    return send_file(asset_path, mimetype="image/png", conditional=True, max_age=3600)
+
+
+@app.route("/branding/background")
+def background_asset():
+    asset_path = branding_asset_path("background")
+    if not asset_path:
+        abort(404)
+    return send_file(asset_path, mimetype="image/png", conditional=True, max_age=3600)
+
+
+@app.route("/branding/login-logo")
+def login_logo_asset():
+    asset_path = branding_asset_path("login_logo")
+    if not asset_path:
+        abort(404)
+    return send_file(asset_path, mimetype="image/png", conditional=True, max_age=3600)
+
+
+@app.route("/favicon.ico")
+def favicon():
+    asset_path = branding_asset_path("favicon")
+    if not asset_path:
+        abort(404)
+    return send_file(asset_path, mimetype="image/png", conditional=True, max_age=3600)
+
+
 
 def run_cmd(cmd, input_text=None):
     result = subprocess.run(cmd, input=input_text, capture_output=True, text=True, check=True)
@@ -552,6 +846,7 @@ def load_ddns_settings():
         "enabled": bool(data.get("enabled", False)),
         "provider": str(data.get("provider", "dynu")).strip() or "dynu",
         "hostname": str(data.get("hostname", "")).strip(),
+        "ip_mode": str(data.get("ip_mode", "dual")).strip().lower() or "dual",
         "use_as_endpoint": bool(data.get("use_as_endpoint", True)),
     }
 
@@ -560,12 +855,51 @@ def save_ddns_settings(data):
     save_json(DDNS_FILE, data)
 
 
+def load_ddns_secret():
+    data = load_json(DDNS_SECRET_FILE, {})
+    if not isinstance(data, dict):
+        data = {}
+    return {
+        "username": str(data.get("username", "")).strip(),
+        "password": str(data.get("password", "")),
+    }
+
+
+def save_ddns_secret(username, password):
+    save_json(DDNS_SECRET_FILE, {"username": username.strip(), "password": password})
+    try:
+        DDNS_SECRET_FILE.chmod(0o600)
+    except Exception:
+        pass
+
+
+def provider_option_tags(selected):
+    return "".join(
+        f'<option value="{key}"{" selected" if key == selected else ""}>{html.escape(spec["label"])}</option>'
+        for key, spec in PROVIDER_SPECS.items()
+    )
+
+
+def ip_mode_option_tags(provider, selected):
+    supported = PROVIDER_SPECS.get(provider, PROVIDER_SPECS["dynu"]).get("supported_ip_modes", ["ipv4"])
+    labels = {"ipv4": "IPv4", "ipv6": "IPv6", "dual": "Dual Stack"}
+    return "".join(
+        f'<option value="{mode}"{" selected" if mode == selected else ""}>{labels[mode]}</option>'
+        for mode in supported
+    )
+
+
 def set_dynu_timer_enabled(enabled):
     if enabled:
         subprocess.run(["systemctl", "daemon-reload"], check=False)
         subprocess.run(["systemctl", "enable", "--now", "wg-panel-dynu.timer"], check=False)
     else:
         subprocess.run(["systemctl", "disable", "--now", "wg-panel-dynu.timer"], check=False)
+
+
+def read_wg_ddns_state():
+    data = load_json(WG_DDNS_STATE_FILE, {})
+    return data if isinstance(data, dict) else {}
 
 
 def channel_sort_key(value):
@@ -1139,10 +1473,16 @@ Bitte in den <a href="/ddns">DDNS-Einstellungen</a> einen Hostnamen setzen oder 
 
 BASE = """
 <!DOCTYPE html>
-<html>
+<html lang="{{ current_locale() }}">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WG Server Panel</title>
+{% if favicon_asset_url() %}
+<link rel="icon" type="image/png" sizes="512x512" href="{{ favicon_asset_url() }}">
+<link rel="shortcut icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="{{ favicon_asset_url() }}">
+{% endif %}
 <style>
 :root{
   --space-1:8px;
@@ -1152,6 +1492,7 @@ BASE = """
   --radius:4px;
   --bg:#070b12;
   --bg-elev:#0b1320;
+  --bg-panel:#0f1827;
   --card:#0e1725;
   --card-2:#121e30;
   --text:#eaf3ff;
@@ -1164,52 +1505,26 @@ BASE = """
   --success:#2dd4a3;
   --warning:#ffb020;
   --danger:#ff5d73;
-  --nav-bg:rgba(8,14,24,.94);
-  --nav-link:#cfe7ff;
-  --nav-active-bg:rgba(45,224,255,.18);
-  --nav-active-text:#f4fdff;
-  --nav-active-border:#2de0ff;
   --shadow:0 20px 60px rgba(0,0,0,.38);
   --glow:0 0 0 1px rgba(45,224,255,.12), 0 0 24px rgba(45,224,255,.08);
 }
-body.light{
-  --bg:#edf4fb;
-  --bg-elev:#ffffff;
-  --card:#f9fbff;
-  --card-2:#eef4fb;
-  --text:#112030;
-  --text-muted:#607488;
-  --border:#c9d7e6;
-  --border-strong:#8aa6c1;
-  --primary:#0aa8c8;
-  --primary-2:#0688a5;
-  --secondary:#dde7f2;
-  --success:#129a72;
-  --warning:#d28a00;
-  --danger:#d84558;
-  --nav-bg:rgba(255,255,255,.94);
-  --nav-link:#1d334a;
-  --nav-active-bg:rgba(10,168,200,.14);
-  --nav-active-text:#0f2738;
-  --nav-active-border:#0aa8c8;
-  --shadow:0 18px 48px rgba(14,34,58,.10);
-  --glow:0 0 0 1px rgba(10,168,200,.14), 0 0 18px rgba(10,168,200,.08);
-}
 *{box-sizing:border-box;}
-html,body{margin:0;padding:0;color:var(--text);}
-body{
+html,body{
+  margin:0;
+  padding:0;
+  color:var(--text);
   font-family:"Segoe UI",Arial,sans-serif;
   line-height:1.45;
   background:
+    linear-gradient(180deg, rgba(6,9,16,.78) 0%, rgba(9,17,27,.82) 35%, rgba(5,8,14,.88) 100%),
+    {% if background_asset_url() %}url('{{ background_asset_url() }}'),{% endif %}
     radial-gradient(circle at top left, rgba(45,224,255,.08), transparent 28%),
     radial-gradient(circle at top right, rgba(89,102,255,.10), transparent 24%),
     linear-gradient(180deg, #060910 0%, #09111b 35%, #05080e 100%);
-}
-body.light{
-  background:
-    radial-gradient(circle at top left, rgba(10,168,200,.08), transparent 28%),
-    radial-gradient(circle at top right, rgba(76,117,255,.08), transparent 24%),
-    linear-gradient(180deg, #eef4fb 0%, #f7fbff 35%, #edf3fa 100%);
+  background-position:center center, center center, top left, top right, center center;
+  background-repeat:no-repeat, no-repeat, no-repeat, no-repeat, no-repeat;
+  background-size:cover, cover, auto, auto, auto;
+  background-attachment:fixed, fixed, scroll, scroll, scroll;
 }
 body::before{
   content:"";
@@ -1223,16 +1538,19 @@ body::before{
   background-size:32px 32px;
   mask-image:linear-gradient(180deg, rgba(0,0,0,.72), transparent 92%);
 }
+.app-shell{
+  min-height:100vh;
+}
 .topbar{
   position:sticky;
   top:0;
   z-index:20;
   display:flex;
   justify-content:space-between;
-  align-items:center;
   gap:var(--space-2);
+  align-items:center;
   padding:18px var(--space-3);
-  background:var(--nav-bg);
+  background:linear-gradient(180deg, rgba(8,14,24,.94), rgba(10,17,28,.88));
   border-bottom:1px solid var(--border-strong);
   backdrop-filter:blur(12px);
   box-shadow:0 12px 30px rgba(0,0,0,.32);
@@ -1240,22 +1558,39 @@ body::before{
 .topbar > div:first-child{
   position:relative;
   padding-left:18px;
+  min-height:58px;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
 }
 .topbar > div:first-child::before{
   content:"";
   position:absolute;
   left:0;
-  top:6px;
+  top:10px;
   width:8px;
-  height:44px;
+  height:38px;
   background:linear-gradient(180deg, var(--primary), #86f6ff);
   clip-path:polygon(0 0, 100% 0, 100% 76%, 58% 100%, 0 100%);
   box-shadow:0 0 18px rgba(45,224,255,.45);
 }
+.brand-mark{
+  display:block;
+  width:auto;
+}
+.brand-mark-topbar{
+  width:min(320px, 48vw);
+  max-width:320px;
+  max-height:none;
+  transform:scale(1.04);
+  transform-origin:left center;
+  margin-right:12px;
+  margin-top:0;
+  filter:drop-shadow(0 8px 22px rgba(45,224,255,.16));
+}
 .topbar h1{
   margin:0;
-  font-size:2.15rem;
-  line-height:1.2;
+  font-size:2.1rem;
   font-family:"Trebuchet MS","Arial Narrow",Arial,sans-serif;
   font-weight:700;
   letter-spacing:.22em;
@@ -1264,28 +1599,28 @@ body::before{
   text-shadow:0 0 18px rgba(45,224,255,.18), 0 12px 30px rgba(0,0,0,.34);
 }
 .topbar-eyebrow{
-  color:var(--text-muted);
-  font-size:.72rem;
+  color:#9ab6cf;
+  font-size:.78rem;
   font-weight:700;
   letter-spacing:.18em;
   text-transform:uppercase;
 }
-.topbar-actions{
-  display:flex;
-  flex-wrap:wrap;
-  justify-content:flex-end;
-  gap:var(--space-1);
+.container{
+  position:relative;
+  width:min(100%, 1680px);
+  margin:0 auto;
+  padding:var(--space-3);
+  display:grid;
+  gap:var(--space-2);
 }
-.container{padding:var(--space-3);position:relative;}
-.stack{display:grid;gap:var(--space-3);}
+.stack{display:grid;gap:var(--space-2);}
 .card{
   position:relative;
   overflow:hidden;
-  background:var(--card);
+  background:linear-gradient(180deg, rgba(15,24,39,.94), rgba(11,19,32,.96));
   border:1px solid var(--border);
-  border-radius:var(--radius);
+  border-radius:4px;
   padding:var(--space-2);
-  box-sizing:border-box;
   box-shadow:var(--shadow);
 }
 .card::before{
@@ -1306,13 +1641,12 @@ body::before{
   border-top:1px solid rgba(45,224,255,.35);
   border-right:1px solid rgba(45,224,255,.35);
 }
-.card + .card{margin-top:var(--space-2);}
 .card h2,.card h3{margin:0 0 var(--space-2) 0;}
-.section-title{margin:0 0 var(--space-2) 0;font-size:1.35rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;}
+.section-title{margin:0 0 var(--space-2) 0;font-size:1.35rem;font-weight:700;}
 .muted,label small,.meta{color:var(--text-muted);}
 table{width:100%;border-collapse:separate;border-spacing:0;background:transparent;}
 th,td{text-align:left;padding:13px 12px;border-bottom:1px solid rgba(44,65,93,.74);vertical-align:top;}
-th{color:var(--text-muted);font-weight:700;font-size:.82rem;letter-spacing:.08em;text-transform:uppercase;background:rgba(255,255,255,.02);}
+th{color:var(--text-muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:.82rem;background:rgba(255,255,255,.02);}
 tr:hover td{background:rgba(255,255,255,.018);}
 button,.btn{
   display:inline-flex;
@@ -1322,7 +1656,7 @@ button,.btn{
   padding:0 14px;
   border-radius:3px;
   border:1px solid var(--border-strong);
-  background:var(--secondary);
+  background:linear-gradient(180deg, #152235, #101a29);
   color:var(--text);
   text-decoration:none;
   cursor:pointer;
@@ -1332,7 +1666,7 @@ button,.btn{
   transition:.16s ease;
 }
 button:hover,.btn:hover{
-  border-color:var(--nav-active-border);
+  border-color:var(--primary);
   box-shadow:var(--glow);
   transform:translateY(-1px);
 }
@@ -1343,31 +1677,28 @@ button.primary,.btn.primary{
 }
 button.primary:hover,.btn.primary:hover{
   background:var(--primary-2);
+  color:#03121b;
 }
 .btn.secondary.active{
-  background:var(--nav-active-bg);
-  color:var(--nav-active-text);
-  border-color:var(--nav-active-border);
+  background:linear-gradient(180deg, rgba(45,224,255,.22), rgba(45,224,255,.10));
+  border-color:var(--primary);
+  color:#f4fdff;
   font-weight:700;
   box-shadow:var(--glow);
-}
-.btn.delete{
-  border-color:rgba(255,93,115,.38);
-  background:linear-gradient(180deg, rgba(80,20,30,.9), rgba(54,14,22,.95));
-}
-.btn.delete:hover{
-  border-color:var(--danger);
 }
 input,select,textarea{
   width:100%;
   min-height:42px;
-  box-sizing:border-box;
   padding:10px 12px;
   border-radius:3px;
   border:1px solid var(--border);
-  background:var(--bg-elev);
+  background:linear-gradient(180deg, #09111b, #0d1624);
   color:var(--text);
   box-shadow:inset 0 0 0 1px rgba(255,255,255,.015);
+}
+select option{
+  color:var(--text);
+  background:#0d1624;
 }
 input:focus,select:focus,textarea:focus{
   outline:none;
@@ -1397,42 +1728,26 @@ footer{
   text-transform:uppercase;
   text-align:center;
 }
-.subnav{
-  display:flex;
-  flex-wrap:wrap;
-  gap:var(--space-1);
-  align-items:center;
-}
-.subnav-link{
+.footer-signature{
   display:inline-flex;
   align-items:center;
-  justify-content:center;
-  min-height:40px;
-  padding:0 14px;
-  border-radius:3px;
-  border:1px solid var(--border-strong);
-  background:var(--secondary);
-  color:var(--text);
-  text-decoration:none;
-  cursor:pointer;
-  text-transform:uppercase;
-  letter-spacing:.06em;
-  font-size:.84rem;
-  transition:.16s ease;
+  gap:8px;
+  min-height:72px;
+  overflow:visible;
 }
-.subnav-link:hover{
-  border-color:var(--nav-active-border);
-  background:var(--card-2);
-  box-shadow:var(--glow);
-  transform:translateY(-1px);
+.footer-signature img{
+  display:block;
+  max-height:60px;
+  width:auto;
+  transform:none;
+  margin-right:0;
+  filter:drop-shadow(0 8px 18px rgba(45,224,255,.14));
 }
-
 .page-head{
   display:flex;
   justify-content:space-between;
   align-items:flex-start;
   gap:var(--space-2);
-  margin-bottom:var(--space-2);
 }
 .page-head h1{
   margin:0;
@@ -1443,31 +1758,26 @@ footer{
 .meshwarn-compact{
   padding:10px 12px;
   border-radius:3px;
-  border:1px solid var(--border);
-  background:var(--card);
-  font-size:.9rem;
+  border:1px solid var(--border-strong);
+  background:linear-gradient(180deg, rgba(15,24,39,.94), rgba(11,19,32,.96));
+  font-size:.86rem;
   cursor:pointer;
   user-select:none;
   transition:.15s ease;
 }
 .meshwarn-compact:hover{
-  border-color:var(--nav-active-border);
+  border-color:var(--primary);
+  box-shadow:var(--glow);
   transform:translateY(-1px);
 }
-.meshwarn-compact.warn:hover{
-  box-shadow:0 0 0 1px rgba(197,138,0,.18);
-}
-.meshwarn-compact.ok:hover{
-  box-shadow:0 0 0 1px rgba(31,157,85,.18);
-}
 .meshwarn-compact.warn{
-  border-color:#8a6d1d;
-  background:#3a2f0b;
+  border-color:rgba(255,176,32,.28);
+  background:linear-gradient(180deg, rgba(255,176,32,.14), rgba(255,176,32,.07));
   color:#f5e6a8;
 }
 .meshwarn-compact.ok{
-  border-color:rgba(31,157,85,.35);
-  background:rgba(31,157,85,.10);
+  border-color:rgba(45,212,163,.30);
+  background:linear-gradient(180deg, rgba(45,212,163,.12), rgba(45,212,163,.06));
 }
 
 .badge{
@@ -1481,8 +1791,6 @@ footer{
   border:1px solid var(--border-strong);
   font-size:.82rem;
   font-weight:700;
-  line-height:1;
-  white-space:nowrap;
   letter-spacing:.08em;
   text-transform:uppercase;
 }
@@ -1498,8 +1806,186 @@ footer{
 }
 .badge.warn{
   background:linear-gradient(180deg, rgba(255,176,32,.16), rgba(255,176,32,.08));
-  border-color:rgba(255,176,32,.38);
-  color:#ffd488;
+  border-color:rgba(255,176,32,.40);
+  color:#f5e6a8;
+}
+.nav-chip{
+  display:inline-flex;
+  align-items:center;
+  min-height:36px;
+  padding:0 14px;
+  border:1px solid rgba(234,243,255,.18);
+  border-radius:999px;
+  background:rgba(255,255,255,.05);
+  color:#dce8f5;
+  text-transform:uppercase;
+  letter-spacing:.12em;
+  font-size:.78rem;
+}
+.sr-only{
+  position:absolute;
+  width:1px;
+  height:1px;
+  padding:0;
+  margin:-1px;
+  overflow:hidden;
+  clip:rect(0,0,0,0);
+  border:0;
+}
+.actions-row,.subnav,.table-actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:var(--space-1);
+  align-items:center;
+}
+.actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:var(--space-1);
+  align-items:center;
+  justify-content:center;
+}
+.actions form{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  margin:0;
+}
+.subnav-link{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:40px;
+  padding:0 14px;
+  border-radius:3px;
+  border:1px solid var(--border-strong);
+  background:linear-gradient(180deg, #152235, #101a29);
+  color:var(--text);
+  text-decoration:none;
+  cursor:pointer;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+  font-size:.84rem;
+  transition:.16s ease;
+}
+.subnav-link:hover{
+  border-color:var(--primary);
+  box-shadow:var(--glow);
+  transform:translateY(-1px);
+}
+.table-actions form{display:inline-flex;margin:0;}
+.table-actions-cell{white-space:nowrap;}
+.language-form{display:inline-flex;align-items:center;}
+.language-menu{
+  position:relative;
+  display:inline-flex;
+}
+.language-menu-toggle{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  min-height:34px;
+  min-width:86px;
+  padding:6px 10px;
+  border:1px solid var(--border-strong);
+  border-radius:3px;
+  background:linear-gradient(180deg, #152235, #101a29);
+  color:var(--text);
+  cursor:pointer;
+  font-size:.78rem;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  list-style:none;
+}
+.language-menu-toggle:hover{
+  border-color:var(--primary);
+  box-shadow:var(--glow);
+  transform:translateY(-1px);
+}
+.language-menu[open] .language-menu-toggle{
+  border-color:var(--primary);
+  box-shadow:var(--glow);
+}
+.language-menu-list{
+  position:absolute;
+  top:calc(100% + 8px);
+  right:0;
+  z-index:30;
+  display:grid;
+  gap:6px;
+  min-width:96px;
+  padding:10px;
+  border:1px solid var(--border-strong);
+  border-radius:3px;
+  background:linear-gradient(180deg, rgba(15,24,39,.98), rgba(11,19,32,.98));
+  box-shadow:0 18px 36px rgba(0,0,0,.42);
+}
+.language-menu-item{
+  width:100%;
+  min-height:34px;
+  padding:0 10px;
+  justify-content:flex-start;
+  gap:8px;
+  font-size:.78rem;
+}
+.language-menu-item.active{
+  background:linear-gradient(180deg, rgba(45,224,255,.22), rgba(45,224,255,.10));
+  border-color:var(--primary);
+  color:#f4fdff;
+  font-weight:700;
+  box-shadow:var(--glow);
+}
+.flag-badge{
+  display:inline-block;
+  width:18px;
+  height:12px;
+  border-radius:2px;
+  border:1px solid rgba(255,255,255,.18);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);
+  flex:0 0 auto;
+}
+.flag-image{
+  object-fit:cover;
+  overflow:hidden;
+}
+.kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--space-2);}
+.kv{
+  display:grid;
+  gap:6px;
+  padding:14px;
+  border-radius:3px;
+  background:linear-gradient(180deg, rgba(18,30,48,.95), rgba(11,19,32,.95));
+  border:1px solid var(--border);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.02);
+}
+.kv-label{
+  color:var(--text-muted);
+  font-size:.78rem;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.host-badge,.inline-code{
+  display:inline-flex;
+  align-items:center;
+  min-height:32px;
+  padding:0 12px;
+  border-radius:999px;
+  background:rgba(79,140,255,.16);
+  border:1px solid rgba(79,140,255,.30);
+}
+.notice{
+  padding:12px 14px;
+  border-radius:3px;
+  border:1px solid var(--border-strong);
+}
+.notice.warn,.warn{
+  background:linear-gradient(180deg, rgba(255,176,32,.14), rgba(255,176,32,.07));
+  border-color:rgba(255,176,32,.28);
+}
+.notice.ok{
+  background:linear-gradient(180deg, rgba(45,212,163,.12), rgba(45,212,163,.06));
+  border-color:rgba(45,212,163,.30);
 }
 .config-textarea{
   min-height:220px;
@@ -1521,56 +2007,10 @@ footer{
   align-items:flex-start;
   margin-bottom:10px;
 }
-
-position:static;
-  display:flex;
-  flex-direction:column;
-  gap:6px;
-  background:rgba(255,255,255,0.04);
-  border:1px solid var(--border);
-  border-radius:10px;
-  padding:12px 16px;
-  font-size:.9rem;
-  line-height:1.4;
-  min-width:200px;
-}
-
-  position:absolute;
-  right:20px;
-  top:20px;
-  display:flex;
-  flex-direction:column;
-  gap:6px;
-  background:rgba(255,255,255,0.04);
-  border:1px solid var(--border);
-  border-radius:10px;
-  padding:12px 16px;
-  font-size:.9rem;
-  line-height:1.4;
-  min-width:200px;
-  z-index:10;
-}
-
-  position:absolute;
-  right:20px;
-  top:20px;
-  display:flex;
-  flex-direction:column;
-  gap:8px;
-  background:rgba(255,255,255,0.03);
-  border:1px solid var(--border);
-  border-radius:10px;
-  padding:10px 14px;
-  font-size:.9rem;
-  min-width:160px;
-}
-
 .level-info-table.compact th,
 .level-info-table.compact td{
   padding:6px 10px;
 }
-
-
 .level-help{
   position:relative;
   display:inline-flex;
@@ -1583,7 +2023,7 @@ position:static;
   justify-content:center;
   width:22px;
   height:22px;
-  border-radius:2px;
+  border-radius:999px;
   border:1px solid var(--border);
   background:rgba(255,255,255,0.04);
   color:var(--text);
@@ -1606,7 +2046,7 @@ position:static;
   border-radius:3px;
   border:1px solid var(--border);
   background:var(--card);
-  box-shadow:var(--shadow);
+  box-shadow:0 12px 30px rgba(0,0,0,.28);
   z-index:50;
 }
 .level-help:hover .level-help-pop,
@@ -1660,6 +2100,80 @@ position:static;
   aspect-ratio:1/1;
   object-fit:contain;
 }
+.login-preview-head{
+  min-height:78px;
+}
+.page-login{
+  overflow:hidden;
+}
+.page-login .app-shell{
+  filter:blur(16px) saturate(.68) brightness(.72);
+  transform:scale(1.015);
+  transform-origin:center top;
+  pointer-events:none;
+  user-select:none;
+}
+.page-login .topbar,
+.page-login .container,
+.page-login footer{
+  opacity:.82;
+}
+.page-login::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  background:
+    linear-gradient(180deg, rgba(4,8,14,.22), rgba(4,8,14,.62)),
+    radial-gradient(circle at 20% 10%, rgba(255,255,255,.10), transparent 24%);
+  pointer-events:none;
+}
+.login-overlay{
+  position:fixed;
+  inset:0;
+  z-index:50;
+  display:grid;
+  place-items:center;
+  padding:24px;
+}
+.login-dialog{
+  width:min(100%, 460px);
+  padding:28px;
+  border:1px solid rgba(173,231,255,.24);
+  background:
+    linear-gradient(180deg, rgba(20,31,48,.90), rgba(10,18,30,.94)),
+    rgba(255,255,255,.04);
+  backdrop-filter:blur(18px) saturate(1.15);
+  box-shadow:
+    0 24px 80px rgba(0,0,0,.50),
+    0 0 0 1px rgba(255,255,255,.04),
+    0 0 48px rgba(45,224,255,.10);
+}
+.login-toolbar{
+  display:flex;
+  justify-content:flex-end;
+  margin:0 0 8px 0;
+}
+.login-brand{
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  margin:-6px 0 12px 0;
+  min-height:180px;
+}
+.login-brand h1{
+  margin:0;
+  font-size:2rem;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+}
+.login-logo{
+  display:block;
+  width:min(100%, 320px);
+  max-width:320px;
+  height:auto;
+  filter:drop-shadow(0 12px 28px rgba(45,224,255,.18));
+}
+pre{white-space:pre-wrap;word-break:break-word;}
 @media (max-width: 980px){
   .cfg-qr-wrap{
     grid-template-columns:1fr;
@@ -1675,22 +2189,28 @@ position:static;
 @media (max-width: 860px){
   .topbar{
     flex-direction:column;
-    align-items:stretch;
-    padding:var(--space-2);
-  }
-  .topbar-actions{
-    justify-content:flex-start;
+    align-items:flex-start;
+    padding:18px;
   }
   .container{
-    padding:var(--space-2);
+    padding:18px;
   }
   footer{
-    padding:0 var(--space-2) var(--space-3) var(--space-2);
+    padding:0 18px 18px 18px;
   }
-  .topbar h1{
-    font-size:1.65rem;
-    letter-spacing:.14em;
+  .topbar h1{font-size:1.65rem;letter-spacing:.14em;}
+  .brand-mark-topbar{
+    width:min(250px, 70vw);
+    transform:scale(1.02);
+    margin-right:8px;
   }
+  th,td{padding:10px 8px;}
+  .login-dialog{padding:22px 18px;}
+  .page-login .app-shell{filter:blur(12px) saturate(.68) brightness(.74);}
+  .login-brand{min-height:150px;}
+  .login-logo{width:min(100%, 250px);}
+  .footer-signature{min-height:56px;}
+  .footer-signature img{max-height:44px;}
 }
 </style>
 
@@ -1780,28 +2300,32 @@ document.addEventListener('DOMContentLoaded', function(){
 
 </script>
 </head>
-<body>
-<div class="topbar">
-  <div>
-    <div class="topbar-eyebrow">Operations Console</div>
-    <h1>WG Server Panel</h1>
+<body class="{{ page_class|default('') }}">
+<div class="app-shell">
+  <div class="topbar">
+    <div>
+      {% if site_logo_asset_url() %}
+      <img class="brand-mark brand-mark-topbar" src="{{ site_logo_asset_url() }}" alt="WG Server Panel">
+      {% else %}
+      <h1>WG Server Panel</h1>
+      {% endif %}
+    </div>
+    <div class="actions-row">{{ (nav_html if nav_html is defined and nav_html is not none else panel_nav_html())|safe }}</div>
   </div>
-  <div class="topbar-actions">
-    <a href="/" class="btn secondary {{ 'active' if request.path == '/' else '' }}">Dashboard</a>
-    <a href="/lan-targets" class="btn secondary {{ 'active' if request.path.startswith('/lan-targets') else '' }}">LAN-Ziele</a>
-    <a href="/server/settings" class="btn secondary {{ 'active' if request.path.startswith('/server/settings') else '' }}">Server</a>
-    <a href="/ddns" class="btn secondary {{ 'active' if request.path.startswith('/ddns') else '' }}">DDNS</a>
-    <a href="/logout" class="btn delete">Logout</a>
-    <button class="btn" onclick="toggleTheme()">Theme</button>
-  </div>
+  <main class="container">
+    <div class="stack">
+      {{ body|safe }}
+    </div>
+  </main>
+  <footer>
+    {% if signature_asset_url() %}
+    <span class="footer-signature"><img src="{{ signature_asset_url() }}" alt="Signatur"></span>
+    {% else %}
+    WG Server Panel
+    {% endif %}
+  </footer>
 </div>
-
-<div class="container">
-  <div class="stack">
-    {{ body|safe }}
-  </div>
-</div>
-<footer>WG Server Panel v1.4 · by Lupus1988</footer>
+{{ overlay|default('')|safe }}
 </body>
 </html>
 """
@@ -1889,6 +2413,7 @@ def login():
 
     error = ""
     info = ""
+    remember_me = False
     auth = load_auth()
     now_ts = int(time.time())
     locked_until = int(auth.get("login_locked_until", 0) or 0)
@@ -1896,6 +2421,7 @@ def login():
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
+        remember_me = request.form.get("remember_me") == "on"
 
         if locked_until > now_ts:
             remaining = locked_until - now_ts
@@ -1911,8 +2437,9 @@ def login():
             session.clear()
             session["logged_in"] = True
             session["username"] = username
+            session["remember_me"] = remember_me
             session["last_seen"] = int(time.time())
-            session.permanent = False
+            session.permanent = remember_me
             write_audit_log(f"{username} logged in")
             return redirect(url_for("index"), code=303)
         else:
@@ -1938,29 +2465,37 @@ def login():
         minutes = max(1, (remaining + 59) // 60)
         info = f"Login ist aktuell gesperrt. Erneut versuchen in ca. {minutes} Minute(n)."
 
-    body = f"""
-<h1>Login</h1>
-
-<div class="card">
-<form method="post">
-<label>Benutzername</label>
-<input type="text" name="username" required>
-
-<label>Passwort</label>
-<input type="password" name="password" required>
-
-<br>
-<p style="opacity:.85;">Die Sitzung läuft nach 20 Minuten Inaktivität automatisch ab.</p>
-
-<button type="submit">Anmelden</button>
-<a class="btn secondary" href="/reset-access">Zugang zurücksetzen</a>
-</form>
-
-{"<div style=\"margin-top:14px;padding:12px 14px;border:1px solid #8a6d1d;border-radius:8px;background:#3a2f0b;color:#f5e6a8;line-height:1.5;\">⚠ " + html.escape(info) + "</div>" if info else ""}
-{"<p>" + html.escape(error) + "</p>" if error else ""}
+    login_brand = (
+        f'<img class="login-logo" src="{html.escape(login_logo_asset_url())}" alt="WG Server Panel">'
+        if login_logo_asset_url()
+        else "<h1>WG Panel</h1>"
+    )
+    overlay = f"""
+<div class="login-overlay">
+  <div class="login-dialog card">
+    <div class="login-toolbar">{language_selector('/login', compact=True)}</div>
+    <div class="login-brand">{login_brand}</div>
+    <form method="post" class="form-grid">
+      <div><label>{html.escape(t("username"))}</label><input type="text" name="username" required autofocus></div>
+      <div><label>{html.escape(t("password"))}</label><input type="password" name="password" required></div>
+      <label><input type="checkbox" name="remember_me" {"checked" if remember_me else ""}> {html.escape(t("remember_me"))}</label>
+      <p class="muted">{html.escape(t("session_timeout_hint"))}</p>
+      <div class="actions-row">
+        <button class="primary" type="submit">{html.escape(t("sign_in"))}</button>
+        <a class="btn secondary" href="/reset-access">{html.escape(t("reset_access"))}</a>
+      </div>
+      {"<div class='notice warn'>" + html.escape(info) + "</div>" if info else ""}
+      {"<p>" + html.escape(error) + "</p>" if error else ""}
+    </form>
+  </div>
 </div>
 """
-    return render_template_string(BASE, body=body)
+    return layout(
+        login_background_preview(),
+        page_class="page-login",
+        nav_html=language_selector("/login", compact=True) + f'<span class="nav-chip">{html.escape(t("panel_locked"))}</span>',
+        overlay=overlay,
+    )
 
 
 @app.route("/logout")
@@ -2242,26 +2777,12 @@ def index():
 </tr>
 """
 
-    ddns_info = ""
-    if ddns["enabled"] and ddns["hostname"]:
-        ddns_info = (
-            '<div class="card">'
-            f'<div class="kv"><span class="kv-label">DDNS aktiv</span> <span class="host-badge">{html.escape(ddns["hostname"])}</span></div>'
-            f'<div class="kv"><span class="kv-label">Als Endpoint verwenden</span> {"Ja" if ddns["use_as_endpoint"] else "Nein"}</div>'
-            '</div>'
-        )
+    ddns_active = bool(ddns["enabled"] and ddns["hostname"])
+    ddns_status_class = "online" if ddns_active else "offline"
+    ddns_status_text = "AKTIV" if ddns_active else "INAKTIV"
 
     body = f"""
-<div class="subnav card">
-  <a class="subnav-link" href="/client/new">+ Client</a>
-  <a class="subnav-link" href="/client/import">Import</a>
-  <a class="subnav-link" href="/backup/export">Backup Export</a>
-  <a class="subnav-link" href="/backup/import">Backup Import</a>
-  <a class="subnav-link" href="/">Aktualisieren</a>
-</div>
-
 {endpoint_warning_html(server)}
-{ddns_info}
 
 <div class="card">
 <h2>WireGuard Server</h2>
@@ -2269,12 +2790,14 @@ def index():
 <tr>
 <th>Status</th>
 <th>Endpoint</th>
+<th>DDNS</th>
 <th>Server-VPN</th>
 <th>Client-Netz</th>
 </tr>
 <tr>
 <td><span id="server-status-badge" class="badge {server_status['status_class']}">{server_status['status_text']}</span></td>
 <td>{server_status['endpoint']}</td>
+<td><span class="badge {ddns_status_class}">{ddns_status_text}</span></td>
 <td>{html.escape(server['server_vpn_ip'])}</td>
 <td>{html.escape(server['client_network'])}</td>
 </tr>
@@ -2287,11 +2810,16 @@ def index():
 </div>
 
 <div class="card">
-
-
-<h2>Clients</h2>
-
-
+<div class="page-head">
+<div><h2>Clients</h2></div>
+<div class="subnav">
+  <a class="subnav-link" href="/client/new">+ Client</a>
+  <a class="subnav-link" href="/client/import">Import</a>
+  <a class="subnav-link" href="/backup/export">Backup Export</a>
+  <a class="subnav-link" href="/backup/import">Backup Import</a>
+  <a class="subnav-link" href="/">Aktualisieren</a>
+</div>
+</div>
 <table>
 <tr>
 <th>Aktiv</th>
@@ -2341,8 +2869,9 @@ def ddns_settings():
     data = load_ddns_settings()
     saved = False
     update_output = ""
-    username, existing_password = read_dynu_netrc()
-    env_hosts = read_dynu_env_hosts()
+    secret = load_ddns_secret()
+    username = secret["username"]
+    existing_password = secret["password"]
 
     if request.method == "POST":
         action = (request.form.get("action") or "save").strip()
@@ -2351,29 +2880,26 @@ def ddns_settings():
             hostname = (request.form.get("hostname") or "").strip()
             username_new = (request.form.get("username") or "").strip()
             password_new = (request.form.get("password") or "").strip()
+            provider = (request.form.get("provider") or "dynu").strip().lower()
+            ip_mode = (request.form.get("ip_mode") or "dual").strip().lower()
+            spec = PROVIDER_SPECS.get(provider, PROVIDER_SPECS["dynu"])
 
             data = {
                 "enabled": request.form.get("enabled") == "on",
-                "provider": "dynu",
+                "provider": provider,
                 "hostname": hostname,
+                "ip_mode": ip_mode,
                 "use_as_endpoint": request.form.get("use_as_endpoint") == "on",
             }
             save_ddns_settings(data)
-
-            if hostname:
-                write_dynu_env_hosts(hostname)
-
-            if username_new or password_new or existing_password:
-                write_dynu_netrc(
-                    username_new or username,
-                    password_new or existing_password
-                )
+            save_ddns_secret(username_new if spec["show_username"] else "", password_new or existing_password)
 
             set_dynu_timer_enabled(bool(data["enabled"] and hostname))
 
             saved = True
-            username, existing_password = read_dynu_netrc()
-            env_hosts = read_dynu_env_hosts()
+            secret = load_ddns_secret()
+            username = secret["username"]
+            existing_password = secret["password"]
 
         elif action == "update_now":
             try:
@@ -2383,67 +2909,107 @@ def ddns_settings():
                 err = (e.stderr or "").strip()
                 update_output = "\n".join([x for x in [text, err] if x]) or "Update fehlgeschlagen."
             data = load_ddns_settings()
-            username, existing_password = read_dynu_netrc()
-            env_hosts = read_dynu_env_hosts()
+            secret = load_ddns_secret()
+            username = secret["username"]
+            existing_password = secret["password"]
 
-    hostname_value = data["hostname"] or env_hosts
+    state = read_wg_ddns_state()
+    hostname_value = data["hostname"]
     masked_password_hint = "Gespeichertes Passwort bleibt erhalten, wenn das Feld leer bleibt." if existing_password else "Noch kein Passwort gespeichert."
+    provider = data["provider"]
+    ip_mode = data.get("ip_mode", "dual")
+    spec = PROVIDER_SPECS.get(provider, PROVIDER_SPECS["dynu"])
+    provider_specs_json = json.dumps(PROVIDER_SPECS)
 
     body = f"""
 <h1>DDNS</h1>
 
 <div class="card">
-<form method="post">
+<form method="post" class="form-grid" id="ddns-settings-form">
 <input type="hidden" name="action" value="save">
 
-<div class="formrow">
 <label><input type="checkbox" name="enabled" {"checked" if data["enabled"] else ""}> DDNS aktivieren</label>
-</div>
-
-<label>Provider</label>
-<input value="Dynu" readonly>
-
-<label>Hostname</label>
-<input name="hostname" value="{html.escape(hostname_value)}" placeholder="z. B. meinserver.freeddns.org">
-
-<label>Dynu Benutzername</label>
-<input name="username" value="{html.escape(username)}" placeholder="Dynu Benutzername">
-
-<label>Dynu Passwort</label>
-<input type="password" name="password" value="" placeholder="Dynu Passwort">
-
+<div><label>Provider</label><select name="provider" data-provider-select>{provider_option_tags(provider)}</select></div>
+<div><label>IP-Modus</label><select name="ip_mode" data-ip-mode-select>{ip_mode_option_tags(provider, ip_mode)}</select></div>
+<div><label>Hostname</label><input name="hostname" value="{html.escape(hostname_value)}" placeholder="{html.escape(spec['hostname_placeholder'])}" data-hostname-input></div>
+<div class="provider-username-row"{" style='display:none;'" if not spec["show_username"] else ""}><label data-username-label>{html.escape(spec["username_label"])}</label><input name="username" value="{html.escape(username)}" data-username-input></div>
+<div><label data-password-label>{html.escape(spec["password_label"])}</label><input type="password" name="password" value=""></div>
+<p class="muted" data-provider-help>{html.escape(spec["help"])}</p>
+<p class="muted" data-ip-mode-help>{html.escape(spec["ip_mode_help"].get(ip_mode, ""))}</p>
 <p>{html.escape(masked_password_hint)}</p>
-
-<div class="formrow">
 <label><input type="checkbox" name="use_as_endpoint" {"checked" if data["use_as_endpoint"] else ""}> Hostname als WireGuard-Endpoint verwenden</label>
-</div>
-
-<br>
-<button type="submit">Speichern</button>
+<div class="actions-row">
+<button type="submit" class="primary">Speichern</button>
 <a class="btn secondary" href="/">Zurück</a>
+</div>
 </form>
 {"<p>Gespeichert.</p>" if saved else ""}
 </div>
 
 <div class="card">
 <h2>DDNS sofort aktualisieren</h2>
-<form method="post">
+<form method="post" class="actions-row">
 <input type="hidden" name="action" value="update_now">
-<button type="submit">IP jetzt aktualisieren</button>
+<button type="submit" class="primary">IP jetzt aktualisieren</button>
 <a class="btn secondary" href="/ddns">Neu laden</a>
 </form>
 {("<pre>" + html.escape(update_output) + "</pre>") if update_output else ""}
 </div>
 
-<div class="card warn">
-<strong>Hinweis:</strong> Zugangsdaten werden als Root-Dateien gespeichert:<br><br>
-<span class="inline-code">/etc/wg-panel-dynu.env</span>
-<span class="inline-code">/etc/wg-panel-dynu.netrc</span>
-<br><br>
-Das automatische Update läuft unabhängig per systemd-Timer.
+<div class="card">
+<h2>Status</h2>
+<div class="kv-grid">
+<div class="kv"><span class="kv-label">Provider</span><span>{html.escape(state.get("provider", provider) or "-")}</span></div>
+<div class="kv"><span class="kv-label">Hostname</span><span>{html.escape(state.get("hostname", hostname_value) or "-")}</span></div>
+<div class="kv"><span class="kv-label">Letzte IPv4</span><span>{html.escape(state.get("last_public_ipv4", "-") or "-")}</span></div>
+<div class="kv"><span class="kv-label">Letzte IPv6</span><span>{html.escape(state.get("last_public_ipv6", "-") or "-")}</span></div>
 </div>
+</div>
+
+<script>
+(() => {{
+  const form = document.getElementById('ddns-settings-form');
+  if (!form) return;
+  const providerSelect = form.querySelector('[data-provider-select]');
+  const usernameRow = form.querySelector('.provider-username-row');
+  const usernameInput = form.querySelector('[data-username-input]');
+  const usernameLabel = form.querySelector('[data-username-label]');
+  const passwordLabel = form.querySelector('[data-password-label]');
+  const hostnameInput = form.querySelector('[data-hostname-input]');
+  const providerHelp = form.querySelector('[data-provider-help]');
+  const ipModeHelp = form.querySelector('[data-ip-mode-help]');
+  const ipModeSelect = form.querySelector('[data-ip-mode-select]');
+  const providerSpecs = {provider_specs_json};
+  const applyProviderState = (preserveSelection = true) => {{
+    const spec = providerSpecs[providerSelect.value] || providerSpecs.dynu;
+    usernameRow.style.display = spec.show_username ? '' : 'none';
+    usernameInput.required = !!spec.require_username;
+    usernameLabel.textContent = spec.username_label;
+    passwordLabel.textContent = spec.password_label;
+    hostnameInput.placeholder = spec.hostname_placeholder;
+    providerHelp.textContent = spec.help;
+    const previous = preserveSelection ? ipModeSelect.value : '';
+    ipModeSelect.innerHTML = '';
+    (spec.supported_ip_modes || ['ipv4']).forEach((mode) => {{
+      const option = document.createElement('option');
+      option.value = mode;
+      option.textContent = mode === 'dual' ? 'Dual Stack' : mode.toUpperCase();
+      if (mode === previous || (!previous && mode === '{ip_mode}')) option.selected = true;
+      ipModeSelect.appendChild(option);
+    }});
+    const selected = ipModeSelect.value || (spec.supported_ip_modes || ['ipv4'])[0];
+    ipModeHelp.textContent = (spec.ip_mode_help && spec.ip_mode_help[selected]) || '';
+  }};
+  providerSelect.addEventListener('change', () => applyProviderState(false));
+  ipModeSelect.addEventListener('change', () => {{
+    const spec = providerSpecs[providerSelect.value] || providerSpecs.dynu;
+    ipModeHelp.textContent = (spec.ip_mode_help && spec.ip_mode_help[ipModeSelect.value]) || '';
+  }});
+  applyProviderState(true);
+}})();
+</script>
 """
-    return render_template_string(BASE, body=body)
+    return layout(body)
 
 
 
@@ -2746,15 +3312,8 @@ def server_settings():
         )
         saved = True
 
-    notice = ""
-    if ddns["enabled"] and ddns["hostname"]:
-        notice = f"""
-<div class="card warn"><strong>Aktiver Endpoint:</strong> DDNS ist aktiv, daher wird aktuell <code>{html.escape(ddns['hostname'])}</code> verwendet.</div>
-"""
-
     body = f"""
 <h1>Server-Einstellungen</h1>
-{notice}
 <div class="card">
 <form method="post">
 <label>Endpoint</label>
